@@ -147,7 +147,6 @@ Readability.prototype = {
       /-ad-|hidden|^hid$| hid$| hid |^hid |banner|combx|comment|com-|contact|footer|gdpr|masthead|media|meta|outbrain|promo|related|scroll|share|shoutbox|sidebar|skyscraper|sponsor|shopping|tags|widget/i,
     extraneous:
       /print|archive|comment|discuss|e[\-]?mail|share|reply|all|login|sign|single|utility/i,
-    byline: /byline|author|dateline|writtenby|p-author/i,
     replaceFonts: /<(\/?)font[^>]*>/gi,
     normalize: /\s{2,}/g,
     videos:
@@ -576,65 +575,6 @@ Readability.prototype = {
       /* ignore exceptions setting the title. */
     }
 
-    var titleHadHierarchicalSeparators = false;
-    function wordCount(str) {
-      return str.split(/\s+/).length;
-    }
-
-    // If there's a separator in the title, first remove the final part
-    if (/ [\|\-\\\/>»] /.test(curTitle)) {
-      titleHadHierarchicalSeparators = / [\\\/>»] /.test(curTitle);
-      curTitle = origTitle.replace(/(.*)[\|\-\\\/>»] .*/gi, "$1");
-
-      // If the resulting title is too short, remove the first part instead:
-      if (wordCount(curTitle) < 3) {
-        curTitle = origTitle.replace(/[^\|\-\\\/>»]*[\|\-\\\/>»](.*)/gi, "$1");
-      }
-    } else if (curTitle.includes(": ")) {
-      // Check if we have an heading containing this exact string, so we
-      // could assume it's the full title.
-      var headings = this._getAllNodesWithTag(doc, ["h1", "h2"]);
-      var trimmedTitle = curTitle.trim();
-      var match = this._someNode(headings, function (heading) {
-        return heading.textContent.trim() === trimmedTitle;
-      });
-
-      // If we don't, let's extract the title out of the original title string.
-      if (!match) {
-        curTitle = origTitle.substring(origTitle.lastIndexOf(":") + 1);
-
-        // If the title is now too short, try the first colon instead:
-        if (wordCount(curTitle) < 3) {
-          curTitle = origTitle.substring(origTitle.indexOf(":") + 1);
-          // But if we have too many words before the colon there's something weird
-          // with the titles and the H tags so let's just use the original title instead
-        } else if (wordCount(origTitle.substr(0, origTitle.indexOf(":"))) > 5) {
-          curTitle = origTitle;
-        }
-      }
-    } else if (curTitle.length > 150 || curTitle.length < 15) {
-      var hOnes = doc.getElementsByTagName("h1");
-
-      if (hOnes.length === 1) {
-        curTitle = this._getInnerText(hOnes[0]);
-      }
-    }
-
-    curTitle = curTitle.trim().replace(this.REGEXPS.normalize, " ");
-    // If we now have 4 words or fewer as our title, and either no
-    // 'hierarchical' separators (\, /, > or ») were found in the original
-    // title or we decreased the number of words by more than 1 word, use
-    // the original title.
-    var curTitleWordCount = wordCount(curTitle);
-    if (
-      curTitleWordCount <= 4 &&
-      (!titleHadHierarchicalSeparators ||
-        curTitleWordCount !=
-          wordCount(origTitle.replace(/[\|\-\\\/>»]+/g, "")) - 1)
-    ) {
-      curTitle = origTitle;
-    }
-
     return curTitle;
   },
 
@@ -825,12 +765,6 @@ Readability.prototype = {
     this._cleanConditionally(articleContent, "ul");
     this._cleanConditionally(articleContent, "div");
 
-    // replace H1 with H2 as H1 should be only title that is displayed separately
-    this._replaceNodeTags(
-      this._getAllNodesWithTag(articleContent, ["h1"]),
-      "h2"
-    );
-
     // Remove extra paragraphs
     this._removeNodes(
       this._getAllNodesWithTag(articleContent, ["p"]),
@@ -905,12 +839,9 @@ Readability.prototype = {
         break;
 
       case "ADDRESS":
-      case "OL":
-      case "UL":
       case "DL":
       case "DD":
       case "DT":
-      case "LI":
       case "FORM":
         node.readability.contentScore -= 3;
         break;
@@ -922,7 +853,10 @@ Readability.prototype = {
       case "H5":
       case "H6":
       case "TH":
-        node.readability.contentScore -= 5;
+      case "LI":
+      case "OL":
+      case "UL":
+        node.readability.contentScore -= 1;
         break;
     }
 
@@ -988,19 +922,6 @@ Readability.prototype = {
    * @param matchString {string}
    * @return boolean
    */
-  _isValidByline(node, matchString) {
-    var rel = node.getAttribute("rel");
-    var itemprop = node.getAttribute("itemprop");
-    var bylineLength = node.textContent.trim().length;
-
-    return (
-      (rel === "author" ||
-        (itemprop && itemprop.includes("author")) ||
-        this.REGEXPS.byline.test(matchString)) &&
-      !!bylineLength &&
-      bylineLength < 100
-    );
-  },
 
   _getNodeAncestors(node, maxDepth) {
     maxDepth = maxDepth || 0;
@@ -1651,58 +1572,7 @@ Readability.prototype = {
           }
 
           metadata = {};
-
-          if (
-            typeof parsed.name === "string" &&
-            typeof parsed.headline === "string" &&
-            parsed.name !== parsed.headline
-          ) {
-            // we have both name and headline element in the JSON-LD. They should both be the same but some websites like aktualne.cz
-            // put their own name into "name" and the article title to "headline" which confuses Readability. So we try to check if either
-            // "name" or "headline" closely matches the html title, and if so, use that one. If not, then we use "name" by default.
-
-            var title = this._getArticleTitle();
-            var nameMatches = this._textSimilarity(parsed.name, title) > 0.75;
-            var headlineMatches =
-              this._textSimilarity(parsed.headline, title) > 0.75;
-
-            if (headlineMatches && !nameMatches) {
-              metadata.title = parsed.headline;
-            } else {
-              metadata.title = parsed.name;
-            }
-          } else if (typeof parsed.name === "string") {
-            metadata.title = parsed.name.trim();
-          } else if (typeof parsed.headline === "string") {
-            metadata.title = parsed.headline.trim();
-          }
-          if (parsed.author) {
-            if (typeof parsed.author.name === "string") {
-              metadata.byline = parsed.author.name.trim();
-            } else if (
-              Array.isArray(parsed.author) &&
-              parsed.author[0] &&
-              typeof parsed.author[0].name === "string"
-            ) {
-              metadata.byline = parsed.author
-                .filter(function (author) {
-                  return author && typeof author.name === "string";
-                })
-                .map(function (author) {
-                  return author.name.trim();
-                })
-                .join(", ");
-            }
-          }
-          if (typeof parsed.description === "string") {
-            metadata.excerpt = parsed.description.trim();
-          }
-          if (parsed.publisher && typeof parsed.publisher.name === "string") {
-            metadata.siteName = parsed.publisher.name.trim();
-          }
-          if (typeof parsed.datePublished === "string") {
-            metadata.datePublished = parsed.datePublished.trim();
-          }
+          metadata.tile = this._getArticleTitle();
         } catch (err) {
           this.log(err.message);
         }
@@ -1779,14 +1649,6 @@ Readability.prototype = {
     if (!metadata.title) {
       metadata.title = this._getArticleTitle();
     }
-
-    // get author
-    metadata.byline =
-      jsonld.byline ||
-      values["dc:creator"] ||
-      values["dcterm:creator"] ||
-      values.author ||
-      values["parsely-author"];
 
     // get description
     metadata.excerpt =
@@ -2623,22 +2485,6 @@ Readability.prototype = {
       }
       return shouldRemove;
     });
-  },
-
-  /**
-   * Check if this node is an H1 or H2 element whose content is mostly
-   * the same as the article title.
-   *
-   * @param Element  the node to check.
-   * @return boolean indicating whether this is a title-like header.
-   */
-  _headerDuplicatesTitle(node) {
-    if (node.tagName != "H1" && node.tagName != "H2") {
-      return false;
-    }
-    var heading = this._getInnerText(node, false);
-    this.log("Evaluating similarity of header:", heading, this._articleTitle);
-    return this._textSimilarity(this._articleTitle, heading) > 0.75;
   },
 
   _flagIsActive(flag) {
